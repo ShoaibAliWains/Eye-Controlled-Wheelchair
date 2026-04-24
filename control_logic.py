@@ -1,54 +1,75 @@
+import time
+import numpy as np
 from collections import deque
 
 class LogicController:
-    def __init__(self, fps=30, hold_time=0.5):
-        self.calibrated = False
-        self.center_x = 0
-        self.center_y = 0
+    def __init__(self, fps=30, hold_time=0.4, blink_tolerance=0.6):
+        self.state = "INIT"
+        self.center_x, self.center_y = 0, 0
         self.calibration_samples = []
         
-        self.x_threshold = 15
-        self.y_threshold = 15
+        self.x_threshold = 25
+        self.y_threshold = 20
         
         self.history_length = int(fps * hold_time)
         self.command_history = deque(maxlen=self.history_length)
+        
+        self.last_eye_time = time.time()
+        self.blink_tolerance = blink_tolerance # Grace period before E-STOP
 
-    def calibrate(self, pupil_pos):
-        if len(self.calibration_samples) < 50:
-            self.calibration_samples.append(pupil_pos)
-            return "CALIBRATING... LOOK CENTER"
-        else:
-            x_vals = [p[0] for p in self.calibration_samples]
-            y_vals = [p[1] for p in self.calibration_samples]
-            self.center_x = sum(x_vals) / len(x_vals)
-            self.center_y = sum(y_vals) / len(y_vals)
-            self.calibrated = True
-            return "CALIBRATION COMPLETE"
+    def process_calibration(self, pupil_pos):
+        self.state = "CALIBRATING - LOOK CENTER"
+        self.calibration_samples.append(pupil_pos)
+        
+        if len(self.calibration_samples) >= 45: # 1.5 seconds at 30fps
+            # Reject blinks/zeros during calibration
+            clean_samples = [p for p in self.calibration_samples if p is not None]
+            
+            if len(clean_samples) > 20:
+                x_vals = [p[0] for p in clean_samples]
+                y_vals = [p[1] for p in clean_samples]
+                # Median filters out wild outliers better than mean
+                self.center_x = int(np.median(x_vals))
+                self.center_y = int(np.median(y_vals))
+                self.state = "READY"
+            else:
+                self.calibration_samples.clear() # Restart if too noisy
+        return "STOP"
 
-    def get_raw_direction(self, pupil_pos):
-        if not pupil_pos:
-            return "STOP"
+    def get_command(self, pupil_pos):
+        # 1. BLINK TOLERANCE & E-STOP
+        if pupil_pos is None:
+            time_missing = time.time() - self.last_eye_time
+            if time_missing > self.blink_tolerance:
+                self.command_history.clear()
+                return "EMERGENCY STOP - NO EYE"
+            else:
+                # If short blink, return the last known intended command to prevent jerking
+                return "HOLDING..." if len(self.command_history) == 0 else self.command_history[-1]
+                
+        self.last_eye_time = time.time()
 
+        # 2. CALIBRATION ROUTINE
+        if self.state != "READY":
+            return self.process_calibration(pupil_pos)
+
+        # 3. DIRECTION MAPPING
         px, py = pupil_pos
+        raw_cmd = "STOP"
         if py < self.center_y - self.y_threshold:
-            return "FORWARD"
+            raw_cmd = "FORWARD"
         elif px < self.center_x - self.x_threshold:
-            return "LEFT"
+            raw_cmd = "LEFT"
         elif px > self.center_x + self.x_threshold:
-            return "RIGHT"
-        else:
-            return "STOP"
+            raw_cmd = "RIGHT"
 
-    def get_filtered_command(self, pupil_pos):
-        if not self.calibrated:
-            return self.calibrate(pupil_pos)
-
-        raw_cmd = self.get_raw_direction(pupil_pos)
         self.command_history.append(raw_cmd)
 
+        # 4. DEBOUNCE
         if len(self.command_history) == self.history_length and len(set(self.command_history)) == 1:
             return raw_cmd
-        elif "STOP" in list(self.command_history)[-3:]: 
-            return "STOP"
             
+        if "STOP" in list(self.command_history)[-4:]:
+            return "STOP" # Prioritize user trying to stop
+
         return "HOLDING..."
