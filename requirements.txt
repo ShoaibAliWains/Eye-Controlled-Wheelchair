@@ -1,3 +1,16 @@
 opencv-python
 numpy
 RPi.GPIO
+
+# ==============================================================
+# ⚠️ CRITICAL HARDWARE DEPENDENCIES FOR RASPBERRY PI ⚠️
+# ==============================================================
+# DO NOT try to install picamera2 or libcamera via pip. 
+# It will cause driver conflicts on Raspberry Pi OS.
+# 
+# Please run the following command directly in your Pi terminal
+# to install the correct hardware camera libraries:
+#
+# sudo apt update
+# sudo apt install python3-libcamera python3-kmsxx python3-picamera2 -y
+# ==============================================================
