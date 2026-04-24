@@ -1,60 +1,116 @@
 import RPi.GPIO as GPIO
+import time
 
 class MotorController:
-    def __init__(self):
+    def __init__(self, config_l, config_r, driver_type="IN_IN_PWM", max_speed=60):
+        """
+        driver_type can be "IN_IN_PWM" or "DIR_PWM"
+        """
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
-        # Pin definitions for dual BTS7960
-        self.L_FWD_PIN = 12
-        self.L_REV_PIN = 13
-        self.R_FWD_PIN = 18
-        self.R_REV_PIN = 19
+        self.driver_type = driver_type
+        self.max_speed = max_speed # Hard safety limit (0-100)
+        self.config_l = config_l
+        self.config_r = config_r
 
-        # Setup pins
-        pins = [self.L_FWD_PIN, self.L_REV_PIN, self.R_FWD_PIN, self.R_REV_PIN]
-        for pin in pins:
-            GPIO.setup(pin, GPIO.OUT)
+        # Setup all pins provided in the configs
+        for cfg in [self.config_l, self.config_r]:
+            for key, pin in cfg.items():
+                if pin is not None:
+                    GPIO.setup(pin, GPIO.OUT)
+                    if key == 'en': GPIO.output(pin, GPIO.HIGH) # Enable by default
 
-        # Initialize PWM (1kHz frequency)
-        self.pwm_l_fwd = GPIO.PWM(self.L_FWD_PIN, 1000)
-        self.pwm_l_rev = GPIO.PWM(self.L_REV_PIN, 1000)
-        self.pwm_r_fwd = GPIO.PWM(self.R_FWD_PIN, 1000)
-        self.pwm_r_rev = GPIO.PWM(self.R_REV_PIN, 1000)
+        # Initialize PWM (1kHz)
+        self.pwm_l = GPIO.PWM(self.config_l['pwm'], 1000)
+        self.pwm_r = GPIO.PWM(self.config_r['pwm'], 1000)
+        self.pwm_l.start(0)
+        self.pwm_r.start(0)
 
-        self._start_pwm()
-        self.stop()
+        # State Tracking
+        self.current_speed_l = 0.0
+        self.current_speed_r = 0.0
+        self.target_speed_l = 0.0
+        self.target_speed_r = 0.0
+        
+        # Acceleration/Deceleration factor (Soft braking)
+        self.accel_step = 1.5 
+        self.brake_step = 3.0 # Braking is faster than accelerating for safety
 
-    def _start_pwm(self):
-        self.pwm_l_fwd.start(0)
-        self.pwm_l_rev.start(0)
-        self.pwm_r_fwd.start(0)
-        self.pwm_r_rev.start(0)
+        self.current_direction = "STOP"
+        self.target_direction = "STOP"
 
-    def move_forward(self, speed=50):
-        self.pwm_l_fwd.ChangeDutyCycle(speed)
-        self.pwm_l_rev.ChangeDutyCycle(0)
-        self.pwm_r_fwd.ChangeDutyCycle(speed)
-        self.pwm_r_rev.ChangeDutyCycle(0)
+    def _apply_logic(self, left_fwd, left_rev, right_fwd, right_rev):
+        if self.driver_type == "IN_IN_PWM":
+            GPIO.output(self.config_l['in1'], left_fwd)
+            GPIO.output(self.config_l['in2'], left_rev)
+            GPIO.output(self.config_r['in1'], right_fwd)
+            GPIO.output(self.config_r['in2'], right_rev)
+        elif self.driver_type == "DIR_PWM":
+            GPIO.output(self.config_l['dir'], left_fwd)
+            GPIO.output(self.config_r['dir'], right_fwd)
 
-    def turn_left(self, speed=40):
-        self.pwm_l_fwd.ChangeDutyCycle(0)
-        self.pwm_l_rev.ChangeDutyCycle(speed)
-        self.pwm_r_fwd.ChangeDutyCycle(speed)
-        self.pwm_r_rev.ChangeDutyCycle(0)
+    def set_target(self, direction, speed=None):
+        if speed is None:
+            speed = self.max_speed
+        else:
+            speed = min(speed, self.max_speed)
 
-    def turn_right(self, speed=40):
-        self.pwm_l_fwd.ChangeDutyCycle(speed)
-        self.pwm_l_rev.ChangeDutyCycle(0)
-        self.pwm_r_fwd.ChangeDutyCycle(0)
-        self.pwm_r_rev.ChangeDutyCycle(speed)
+        self.target_direction = direction
 
-    def stop(self):
-        self.pwm_l_fwd.ChangeDutyCycle(0)
-        self.pwm_l_rev.ChangeDutyCycle(0)
-        self.pwm_r_fwd.ChangeDutyCycle(0)
-        self.pwm_r_rev.ChangeDutyCycle(0)
+        if direction == "FORWARD":
+            self.target_speed_l = speed
+            self.target_speed_r = speed
+        elif direction == "LEFT":
+            self.target_speed_l = speed * 0.5 # Slow turn for safety
+            self.target_speed_r = speed
+        elif direction == "RIGHT":
+            self.target_speed_l = speed
+            self.target_speed_r = speed * 0.5 # Slow turn for safety
+        else: # STOP
+            self.target_speed_l = 0
+            self.target_speed_r = 0
+
+    def update(self):
+        """Must be called in main loop for smooth ramping and safe direction changes."""
+        
+        # 1. STOP BEFORE REVERSE SAFETY
+        # If changing from FWD to REV, force speed to 0 first before flipping relays/logic
+        if self.current_direction != self.target_direction and (self.current_speed_l > 0 or self.current_speed_r > 0):
+            self.target_speed_l = 0
+            self.target_speed_r = 0
+        elif self.current_speed_l == 0 and self.current_speed_r == 0:
+            # Once stopped, it is safe to change the physical hardware logic
+            self.current_direction = self.target_direction
+            if self.current_direction == "FORWARD":
+                self._apply_logic(True, False, True, False)
+            elif self.current_direction == "LEFT":
+                self._apply_logic(False, True, True, False)
+            elif self.current_direction == "RIGHT":
+                self._apply_logic(True, False, False, True)
+
+        # 2. SOFT ACCELERATION & BRAKING
+        for side in ['l', 'r']:
+            current = getattr(self, f"current_speed_{side}")
+            target = getattr(self, f"target_speed_{side}")
+            
+            if current < target:
+                setattr(self, f"current_speed_{side}", min(current + self.accel_step, target))
+            elif current > target:
+                setattr(self, f"current_speed_{side}", max(current - self.brake_step, target))
+
+        self.pwm_l.ChangeDutyCycle(self.current_speed_l)
+        self.pwm_r.ChangeDutyCycle(self.current_speed_r)
+
+    def emergency_stop(self):
+        """Instant halt for critical failures."""
+        self.target_speed_l = 0
+        self.target_speed_r = 0
+        self.current_speed_l = 0
+        self.current_speed_r = 0
+        self.pwm_l.ChangeDutyCycle(0)
+        self.pwm_r.ChangeDutyCycle(0)
 
     def cleanup(self):
-        self.stop()
+        self.emergency_stop()
         GPIO.cleanup()
