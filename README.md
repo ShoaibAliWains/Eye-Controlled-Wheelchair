@@ -1,4 +1,3 @@
-# Eye-Controlled-Wheelchair
 # Camera-Based Eye-Controlled Wheelchair System
 
 A production-level embedded system using Raspberry Pi 4, OpenCV, and dual BTS7960 motor drivers to control a wheelchair via eye-tracking.
