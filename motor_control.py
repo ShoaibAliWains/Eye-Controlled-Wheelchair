@@ -82,12 +82,14 @@ class MotorController:
         elif self.current_speed_l == 0 and self.current_speed_r == 0:
             # Once stopped, it is safe to change the physical hardware logic
             self.current_direction = self.target_direction
+            
+            # UPDATED LOGIC BASED ON CLIENT WIRING
             if self.current_direction == "FORWARD":
-                self._apply_logic(True, False, True, False)
-            elif self.current_direction == "LEFT":
-                self._apply_logic(False, True, True, False)
-            elif self.current_direction == "RIGHT":
                 self._apply_logic(True, False, False, True)
+            elif self.current_direction == "LEFT":
+                self._apply_logic(False, False, False, True)
+            elif self.current_direction == "RIGHT":
+                self._apply_logic(True, False, False, False)
 
         # 2. SOFT ACCELERATION & BRAKING
         for side in ['l', 'r']:
