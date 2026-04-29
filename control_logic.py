@@ -8,8 +8,9 @@ class LogicController:
         self.center_x, self.center_y = 0, 0
         self.calibration_samples = []
         
-        self.x_threshold = 25
-        self.y_threshold = 20
+        # UPDATED: Lowered thresholds to make Left/Right detection much easier
+        self.x_threshold = 15
+        self.y_threshold = 18
         
         self.history_length = int(fps * hold_time)
         self.command_history = deque(maxlen=self.history_length)
