@@ -13,7 +13,8 @@ DRIVER_TYPE = "IN_IN_PWM"
 LEFT_MOTOR = {'in1': 5, 'in2': 6, 'pwm': 12, 'dir': None, 'en': None}
 RIGHT_MOTOR = {'in1': 16, 'in2': 20, 'pwm': 13, 'dir': None, 'en': None}
 
-MAX_SPEED_LIMIT = 55 # 0-100 safe speed
+# UPDATED: Increased max speed from 55 to 75 to compensate for low voltage
+MAX_SPEED_LIMIT = 75 
 # =================================================
 
 def draw_ui(frame, logic, command, pupil_pos, motors):
