@@ -3,6 +3,8 @@ import dlib
 import numpy as np
 import os
 import json
+import urllib.request
+import bz2
 from scipy.spatial import distance as dist
 from collections import deque
 
@@ -70,9 +72,21 @@ class EyeTracker:
     EAR_CONSEC_FRAMES = 2
 
     def __init__(self, predictor_path="shape_predictor_68_face_landmarks.dat", config_path="config.json"):
-        # 1. MODEL FILE CHECK
+        # 1. AUTO-DOWNLOAD MODEL FILE MAGIC
         if not os.path.exists(predictor_path):
-            raise FileNotFoundError(f"\n[CRITICAL ERROR] '{predictor_path}' not found! Please download the Dlib model file into the project folder.\n")
+            print(f"\n[INFO] '{predictor_path}' not found!")
+            print("[INFO] Downloading Dlib model automatically (this will take a minute)...")
+            url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
+            bz2_path = predictor_path + ".bz2"
+            
+            urllib.request.urlretrieve(url, bz2_path)
+            
+            print("[INFO] Extracting model file...")
+            with bz2.BZ2File(bz2_path, 'rb') as fr, open(predictor_path, 'wb') as fw:
+                fw.write(fr.read())
+            
+            os.remove(bz2_path)
+            print("[INFO] Download and extraction complete!\n")
 
         print("[EyeTracker] Loading dlib face detector …")
         self.detector  = dlib.get_frontal_face_detector()
@@ -97,6 +111,10 @@ class EyeTracker:
         self._blink_counter = 0
         self.eye_open = True          
         self.hud_data = None
+        
+        # 3. PERFORMANCE OPTIMIZATION VARIABLES
+        self.frame_count = 0
+        self.cached_faces = [] 
 
         print("[EyeTracker] dlib loaded successfully.")
 
@@ -114,7 +132,12 @@ class EyeTracker:
         gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray    = cv2.equalizeHist(gray)   
 
-        faces = self.detector(gray, 0)
+        # PERFORMANCE OPTIMIZATION: Run Dlib detector every 3rd frame to save CPU
+        self.frame_count += 1
+        if self.frame_count % 3 == 0 or len(self.cached_faces) == 0:
+            self.cached_faces = self.detector(gray, 0)
+
+        faces = self.cached_faces
 
         if len(faces) == 0:
             self.eye_open  = False
