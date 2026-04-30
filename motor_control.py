@@ -58,15 +58,16 @@ class MotorController:
 
         self.target_direction = direction
 
+        # DIFFERENTIAL DRIVE FIX: Both motors spin, but turning side spins slower
         if direction == "FORWARD":
             self.target_speed_l = speed
             self.target_speed_r = speed
         elif direction == "LEFT":
-            self.target_speed_l = speed * 0.5 # Slow turn for safety
+            self.target_speed_l = speed * 0.3 # Slow down left motor to turn left smoothly
             self.target_speed_r = speed
         elif direction == "RIGHT":
             self.target_speed_l = speed
-            self.target_speed_r = speed * 0.5 # Slow turn for safety
+            self.target_speed_r = speed * 0.3 # Slow down right motor to turn right smoothly
         else: # STOP
             self.target_speed_l = 0
             self.target_speed_r = 0
@@ -83,13 +84,11 @@ class MotorController:
             # Once stopped, it is safe to change the physical hardware logic
             self.current_direction = self.target_direction
             
-            # UPDATED LOGIC BASED ON CLIENT WIRING
-            if self.current_direction == "FORWARD":
+            # EXPLICIT STOP & FIX: Both motors stay in FORWARD state for turns based on client wiring
+            if self.current_direction in ["FORWARD", "LEFT", "RIGHT"]:
                 self._apply_logic(True, False, False, True)
-            elif self.current_direction == "LEFT":
-                self._apply_logic(False, False, False, True)
-            elif self.current_direction == "RIGHT":
-                self._apply_logic(True, False, False, False)
+            elif self.current_direction == "STOP":
+                self._apply_logic(False, False, False, False)
 
         # 2. SOFT ACCELERATION & BRAKING
         for side in ['l', 'r']:
@@ -112,6 +111,8 @@ class MotorController:
         self.current_speed_r = 0
         self.pwm_l.ChangeDutyCycle(0)
         self.pwm_r.ChangeDutyCycle(0)
+        self.current_direction = "STOP"
+        self._apply_logic(False, False, False, False)
 
     def cleanup(self):
         self.emergency_stop()
