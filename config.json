@@ -1,0 +1,10 @@
+{
+    "ear_blink_threshold": 0.22,
+    "gaze_left_threshold": 0.65,
+    "gaze_right_threshold": 0.35,
+    "max_motor_speed": 75,
+    "hold_frames": 10,
+    "blink_tolerance": 0.6,
+    "double_blink_win": 1.0,
+    "paused_on_start": false
+}
