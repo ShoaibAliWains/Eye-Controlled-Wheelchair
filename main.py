@@ -70,7 +70,7 @@ def draw_ui(frame, logic, command, motors, gaze_dir, eye_open):
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, state_color, 2)
 
     # Command
-    if "STOP" in command or "EMERGENCY" in command:
+    if "STOP" in command or "EMERGENCY" in command or "FROZEN" in command:
         cmd_color = _C_RED
     elif command in ("FORWARD", "LEFT", "RIGHT"):
         cmd_color = _C_GREEN
@@ -162,8 +162,19 @@ def main():
     command  = "STOP"
 
     try:
+        last_loop_time = time.time() # FAILSAFE TRACKER INITIALIZATION
+
         while True:
-            t0 = time.time()
+            loop_start = time.time()
+
+            # FAILSAFE WATCHDOG CHECK (0.5 seconds timeout)
+            if loop_start - last_loop_time > 0.5:
+                print("\n[CRITICAL SAFETY WARNING] Loop delayed/frozen! Triggering Emergency Stop!")
+                motors.emergency_stop()
+                command = "SYSTEM FROZEN - MOTORS KILLED"
+                logic.current_command = command
+
+            last_loop_time = loop_start
 
             # 1. Grab frame
             frame = cam.get_frame()
@@ -177,8 +188,8 @@ def main():
             command = logic.process(gaze_dir, eye_open)
 
             # 4. Motor control
-            if "EMERGENCY" in command or "STOP" in command or command == "PAUSED":
-                if "EMERGENCY" in command:
+            if "EMERGENCY" in command or "STOP" in command or command == "PAUSED" or "FROZEN" in command:
+                if "EMERGENCY" in command or "FROZEN" in command:
                     motors.emergency_stop()
                 else:
                     motors.set_target("STOP")
@@ -214,7 +225,7 @@ def main():
                     pass
 
             # 7. FPS cap
-            elapsed = time.time() - t0
+            elapsed = time.time() - loop_start
             if elapsed < FRAME_BUDGET:
                 time.sleep(FRAME_BUDGET - elapsed)
 
