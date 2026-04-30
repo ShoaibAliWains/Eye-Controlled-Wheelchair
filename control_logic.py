@@ -1,76 +1,144 @@
 import time
-import numpy as np
+import json
+import os
 from collections import deque
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  LogicController  —  translates gaze direction into motor commands
+#
+#  Key improvements over v1:
+#   • Works with gaze_dir strings ("LEFT" / "FORWARD" / "RIGHT" / "NO_EYE")
+#     instead of raw pixel coordinates → no blue-square dependency
+#   • EAR-based eye-open check done in EyeTracker; here we just receive a bool
+#   • Debounce: command must be held for `hold_frames` consecutive frames
+#   • Double-blink detection: two blinks within 1 s → PAUSE toggle
+#   • Blink tolerance: short blinks (<0.6 s) do not trigger E-STOP
+#   • Optional JSON config file for easy threshold tuning without editing code
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_CONFIG = {
+    "hold_frames":      10,      # frames gaze must be stable before command fires
+    "blink_tolerance":   0.6,    # seconds of missing eye before E-STOP
+    "double_blink_win":  1.0,    # seconds window for double-blink detection
+    "paused_on_start":  False    # start in PAUSED state for safety
+}
+
+
+def load_config(path="config.json"):
+    cfg = DEFAULT_CONFIG.copy()
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                overrides = json.load(f)
+            cfg.update(overrides)
+            print(f"[Config] Loaded '{path}': {overrides}")
+        except Exception as e:
+            print(f"[Config] Could not read '{path}': {e} — using defaults.")
+    return cfg
+
+
 class LogicController:
-    def __init__(self, fps=30, hold_time=0.4, blink_tolerance=0.6):
-        self.state = "INIT"
-        self.center_x, self.center_y = 0, 0
-        self.calibration_samples = []
-        
-        # UPDATED: Lowered thresholds to make Left/Right detection much easier
-        self.x_threshold = 15
-        self.y_threshold = 18
-        
-        self.history_length = int(fps * hold_time)
-        self.command_history = deque(maxlen=self.history_length)
-        
-        self.last_eye_time = time.time()
-        self.blink_tolerance = blink_tolerance # Grace period before E-STOP
 
-    def process_calibration(self, pupil_pos):
-        self.state = "CALIBRATING - LOOK CENTER"
-        self.calibration_samples.append(pupil_pos)
-        
-        if len(self.calibration_samples) >= 45: # 1.5 seconds at 30fps
-            # Reject blinks/zeros during calibration
-            clean_samples = [p for p in self.calibration_samples if p is not None]
-            
-            if len(clean_samples) > 20:
-                x_vals = [p[0] for p in clean_samples]
-                y_vals = [p[1] for p in clean_samples]
-                # Median filters out wild outliers better than mean
-                self.center_x = int(np.median(x_vals))
-                self.center_y = int(np.median(y_vals))
-                self.state = "READY"
+    def __init__(self, config_path="config.json"):
+        cfg = load_config(config_path)
+
+        self.state = "READY"   # No calibration needed — gaze ratio is self-relative
+
+        # Debounce
+        self.hold_frames     = cfg["hold_frames"]
+        self._history        = deque(maxlen=self.hold_frames)
+        self._last_confirmed = "STOP"
+
+        # Blink / E-STOP
+        self.blink_tolerance = cfg["blink_tolerance"]
+        self._last_eye_time  = time.time()
+
+        # Double-blink pause
+        self.double_blink_win = cfg["double_blink_win"]
+        self._blink_times     = deque(maxlen=5)
+        self._paused          = cfg["paused_on_start"]
+
+        # Expose for draw_ui
+        self.current_command  = "STOP"
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    def process(self, gaze_dir: str, eye_open: bool) -> str:
+        """
+        Call once per frame.
+
+        Parameters
+        ----------
+        gaze_dir : "LEFT" | "FORWARD" | "RIGHT" | "NO_EYE"
+        eye_open : True if EAR above threshold
+
+        Returns
+        -------
+        command : "FORWARD" | "LEFT" | "RIGHT" | "STOP" |
+                  "EMERGENCY STOP - NO EYE" | "PAUSED"
+        """
+        now = time.time()
+
+        # ── 1. Eye presence / blink logic ─────────────────────────────
+        if not eye_open or gaze_dir == "NO_EYE":
+            elapsed = now - self._last_eye_time
+            self._register_blink(now)
+
+            if elapsed > self.blink_tolerance:
+                self.current_command = "EMERGENCY STOP - NO EYE"
+                self._history.clear()
+                return self.current_command
             else:
-                self.calibration_samples.clear() # Restart if too noisy
-        return "STOP"
+                # Short blink → hold last confirmed command (no jerk)
+                return self._last_confirmed
+        else:
+            self._last_eye_time = now
 
-    def get_command(self, pupil_pos):
-        # 1. BLINK TOLERANCE & E-STOP
-        if pupil_pos is None:
-            time_missing = time.time() - self.last_eye_time
-            if time_missing > self.blink_tolerance:
-                self.command_history.clear()
-                return "EMERGENCY STOP - NO EYE"
-            else:
-                # If short blink, return the last known intended command to prevent jerking
-                return "HOLDING..." if len(self.command_history) == 0 else self.command_history[-1]
-                
-        self.last_eye_time = time.time()
+        # ── 2. Double-blink → pause / resume ──────────────────────────
+        if self._check_double_blink(now):
+            self._paused = not self._paused
+            state_str = "PAUSED" if self._paused else "READY"
+            print(f"[Logic] Double-blink detected → {state_str}")
 
-        # 2. CALIBRATION ROUTINE
-        if self.state != "READY":
-            return self.process_calibration(pupil_pos)
+        if self._paused:
+            self.current_command = "PAUSED"
+            return "PAUSED"
 
-        # 3. DIRECTION MAPPING
-        px, py = pupil_pos
-        raw_cmd = "STOP"
-        if py < self.center_y - self.y_threshold:
-            raw_cmd = "FORWARD"
-        elif px < self.center_x - self.x_threshold:
-            raw_cmd = "LEFT"
-        elif px > self.center_x + self.x_threshold:
-            raw_cmd = "RIGHT"
+        # ── 3. Debounce ───────────────────────────────────────────────
+        self._history.append(gaze_dir)
 
-        self.command_history.append(raw_cmd)
+        if len(self._history) == self.hold_frames:
+            unique = set(self._history)
+            if len(unique) == 1:
+                # Stable gaze — confirm the command
+                confirmed = list(unique)[0]
+                self._last_confirmed = confirmed
+                self.current_command = confirmed
+                return confirmed
 
-        # 4. DEBOUNCE
-        if len(self.command_history) == self.history_length and len(set(self.command_history)) == 1:
-            return raw_cmd
-            
-        if "STOP" in list(self.command_history)[-4:]:
-            return "STOP" # Prioritize user trying to stop
-
+        # Still in debounce window
+        self.current_command = "HOLDING..."
         return "HOLDING..."
+
+    def reset(self):
+        """Called when user presses 'r' — full restart."""
+        self.state           = "READY"
+        self._history.clear()
+        self._last_confirmed = "STOP"
+        self._paused         = False
+        self._last_eye_time  = time.time()
+        print("[Logic] Reset complete.")
+
+    # ── internal helpers ──────────────────────────────────────────────────
+
+    def _register_blink(self, t):
+        self._blink_times.append(t)
+
+    def _check_double_blink(self, now):
+        """Returns True if two blinks occurred within the double_blink_win."""
+        recent = [t for t in self._blink_times if now - t < self.double_blink_win]
+        if len(recent) >= 2:
+            self._blink_times.clear()   # consume the event
+            return True
+        return False
