@@ -1,62 +1,226 @@
 import cv2
+import dlib
 import numpy as np
+from scipy.spatial import distance as dist
+from collections import deque
 
+
+# ─────────────────────────────────────────────
+#  Eye Aspect Ratio  (blink / eye-open check)
+# ─────────────────────────────────────────────
+def eye_aspect_ratio(eye_points):
+    """
+    EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
+    Classic Soukupová & Čech formula.
+    Returns 0.0 when the eye is fully closed.
+    """
+    A = dist.euclidean(eye_points[1], eye_points[5])
+    B = dist.euclidean(eye_points[2], eye_points[4])
+    C = dist.euclidean(eye_points[0], eye_points[3])
+    if C == 0:
+        return 0.0
+    return (A + B) / (2.0 * C)
+
+
+# ─────────────────────────────────────────────
+#  Gaze Ratio  (LEFT / CENTER / RIGHT)
+# ─────────────────────────────────────────────
+def gaze_ratio(eye_points, gray_frame):
+    """
+    Divides the eye ROI into left / right halves and
+    compares white-pixel count to determine gaze direction.
+
+    Returns a float:
+      < 0.35  → looking LEFT
+      0.35–0.65 → looking FORWARD / CENTER
+      > 0.65  → looking RIGHT
+    """
+    # Build a mask shaped exactly like the eye
+    height, width = gray_frame.shape
+    mask = np.zeros((height, width), dtype=np.uint8)
+    pts = np.array(eye_points, dtype=np.int32)
+    cv2.fillPoly(mask, [pts], 255)
+
+    eye_region = cv2.bitwise_and(gray_frame, gray_frame, mask=mask)
+
+    # Bounding box of the eye
+    x_coords = pts[:, 0]
+    y_coords = pts[:, 1]
+    ex, ey = x_coords.min(), y_coords.min()
+    ew = x_coords.max() - ex
+    eh = y_coords.max() - ey
+
+    if ew <= 0 or eh <= 0:
+        return 0.5  # safe default = FORWARD
+
+    eye_crop = eye_region[ey:ey + eh, ex:ex + ew]
+
+    # Threshold to isolate the dark iris/pupil
+    _, thresh = cv2.threshold(eye_crop, 70, 255, cv2.THRESH_BINARY_INV)
+
+    # Split into left / right halves
+    mid = ew // 2
+    left_white  = cv2.countNonZero(thresh[:, :mid])
+    right_white = cv2.countNonZero(thresh[:, mid:])
+
+    total = left_white + right_white
+    if total == 0:
+        return 0.5
+
+    ratio = left_white / total  # high → looking left, low → looking right
+    return ratio
+
+
+# ─────────────────────────────────────────────
+#  Main EyeTracker class
+# ─────────────────────────────────────────────
 class EyeTracker:
-    def __init__(self):
-        self.eye_cascade = cv2.CascadeClassifier('haarcascade_eye.xml')
-        
-        # Temporal smoothing for jittery tracking
-        self.smooth_x = None
-        self.smooth_y = None
-        self.alpha = 0.4 # Smoothing factor (0.0 to 1.0)
+    # dlib landmark indices
+    LEFT_EYE_IDX  = list(range(36, 42))
+    RIGHT_EYE_IDX = list(range(42, 48))
 
-    def get_pupil_position(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.medianBlur(gray, 5) 
+    # EAR threshold — below this = eye CLOSED
+    EAR_THRESHOLD = 0.22
+    # Consecutive frames below threshold to confirm a blink
+    EAR_CONSEC_FRAMES = 2
 
-        eyes = self.eye_cascade.detectMultiScale(gray, 1.3, 5, minSize=(60, 60))
+    def __init__(self, predictor_path="shape_predictor_68_face_landmarks.dat"):
+        print("[EyeTracker] Loading dlib face detector …")
+        self.detector  = dlib.get_frontal_face_detector()
+        self.predictor = dlib.shape_predictor(predictor_path)
 
-        if len(eyes) > 0:
-            eyes = sorted(eyes, key=lambda x: x[2]*x[3], reverse=True)
-            ex, ey, ew, eh = eyes[0]
-            
-            eye_roi = gray[ey:ey+eh, ex:ex+ew]
-            
-            thresh = cv2.adaptiveThreshold(
-                eye_roi, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                cv2.THRESH_BINARY_INV, 15, 3
-            )
-            
-            # Remove noise (eyelashes)
-            kernel = np.ones((3, 3), np.uint8)
-            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+        # Smoothing buffer for gaze ratio
+        self._ratio_buf = deque(maxlen=5)
 
-            contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            
-            valid_contours = []
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if 50 < area < 1500: 
-                    perimeter = cv2.arcLength(cnt, True)
-                    if perimeter == 0: continue
-                    circularity = 4 * np.pi * (area / (perimeter * perimeter))
-                    if 0.3 < circularity < 1.2: # Broadened for partial closures
-                        valid_contours.append(cnt)
+        # Blink counter
+        self._blink_counter = 0
+        self.eye_open = True          # public flag read by LogicController
 
-            if valid_contours:
-                largest = max(valid_contours, key=cv2.contourArea)
-                M = cv2.moments(largest)
-                if M['m00'] != 0:
-                    raw_cx = ex + int(M['m10'] / M['m00'])
-                    raw_cy = ey + int(M['m01'] / M['m00'])
-                    
-                    # Exponential Moving Average for smooth output
-                    if self.smooth_x is None:
-                        self.smooth_x, self.smooth_y = raw_cx, raw_cy
-                    else:
-                        self.smooth_x = (self.alpha * raw_cx) + ((1 - self.alpha) * self.smooth_x)
-                        self.smooth_y = (self.alpha * raw_cy) + ((1 - self.alpha) * self.smooth_y)
-                        
-                    return (int(self.smooth_x), int(self.smooth_y)), frame
+        # Iron-Man HUD draw data (set each frame, consumed by draw_ui)
+        self.hud_data = None
 
-        return None, frame
+        print("[EyeTracker] dlib loaded successfully.")
+
+    # ── internal helpers ──────────────────────────────────────────────────
+
+    def _shape_to_np(self, shape):
+        coords = np.zeros((68, 2), dtype=int)
+        for i in range(68):
+            coords[i] = (shape.part(i).x, shape.part(i).y)
+        return coords
+
+    def _get_eye_pts(self, landmarks, indices):
+        return np.array([(landmarks[i][0], landmarks[i][1]) for i in indices])
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    def get_gaze(self, frame):
+        """
+        Process one BGR frame.
+
+        Returns
+        -------
+        gaze_dir : str  — "LEFT" | "FORWARD" | "RIGHT" | "NO_EYE"
+        eye_open : bool — False means blink / eyes closed → EMERGENCY STOP
+        display  : frame with Iron Man HUD drawn on it
+        """
+        display = frame.copy()
+        gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray    = cv2.equalizeHist(gray)   # boost contrast for dim environments
+
+        faces = self.detector(gray, 0)
+
+        if len(faces) == 0:
+            self.eye_open  = False
+            self.hud_data  = None
+            return "NO_EYE", False, display
+
+        # Use the largest / most-confident face
+        face = max(faces, key=lambda r: r.width() * r.height())
+        shape     = self.predictor(gray, face)
+        landmarks = self._shape_to_np(shape)
+
+        left_pts  = self._get_eye_pts(landmarks, self.LEFT_EYE_IDX)
+        right_pts = self._get_eye_pts(landmarks, self.RIGHT_EYE_IDX)
+
+        # ── EAR check ──────────────────────────────────────────────────
+        ear_l = eye_aspect_ratio(left_pts)
+        ear_r = eye_aspect_ratio(right_pts)
+        ear   = (ear_l + ear_r) / 2.0
+
+        if ear < self.EAR_THRESHOLD:
+            self._blink_counter += 1
+            if self._blink_counter >= self.EAR_CONSEC_FRAMES:
+                self.eye_open = False
+                self._draw_hud(display, left_pts, right_pts, landmarks,
+                               ear, gaze_ratio_val=None, is_closed=True)
+                return "NO_EYE", False, display
+        else:
+            self._blink_counter = 0
+            self.eye_open = True
+
+        # ── Gaze ratio ─────────────────────────────────────────────────
+        # Average of both eyes for robustness
+        ratio_l = gaze_ratio(left_pts,  gray)
+        ratio_r = gaze_ratio(right_pts, gray)
+        raw_ratio = (ratio_l + ratio_r) / 2.0
+
+        self._ratio_buf.append(raw_ratio)
+        smooth_ratio = float(np.mean(self._ratio_buf))
+
+        # ── Direction mapping ──────────────────────────────────────────
+        if smooth_ratio < 0.35:
+            gaze_dir = "LEFT"
+        elif smooth_ratio > 0.65:
+            gaze_dir = "RIGHT"
+        else:
+            gaze_dir = "FORWARD"
+
+        # ── Draw Iron Man HUD ──────────────────────────────────────────
+        self._draw_hud(display, left_pts, right_pts, landmarks,
+                       ear, smooth_ratio, is_closed=False)
+
+        return gaze_dir, True, display
+
+    # ── Iron Man HUD renderer ─────────────────────────────────────────────
+
+    def _draw_hud(self, frame, left_pts, right_pts, landmarks,
+                  ear, gaze_ratio_val, is_closed):
+        """
+        Draws:
+          • Green convex hull around each eye (open) or red when closed
+          • Green crosshair on pupil centroid
+          • Semi-transparent gaze direction arrow
+          • EAR value overlay
+        """
+        color = (0, 80, 255) if is_closed else (0, 255, 80)   # Red if closed
+
+        for pts in [left_pts, right_pts]:
+            hull = cv2.convexHull(pts)
+            cv2.polylines(frame, [hull], isClosed=True, color=color, thickness=1)
+
+            # Pupil centroid
+            cx = int(pts[:, 0].mean())
+            cy = int(pts[:, 1].mean())
+
+            if not is_closed:
+                # Crosshair
+                cv2.line(frame, (cx - 8, cy),     (cx + 8, cy),     (0, 255, 80), 1)
+                cv2.line(frame, (cx,     cy - 8), (cx,     cy + 8), (0, 255, 80), 1)
+                cv2.circle(frame, (cx, cy), 3, (0, 255, 80), -1)
+            else:
+                # X mark on closed eye
+                cv2.line(frame, (cx - 6, cy - 6), (cx + 6, cy + 6), (0, 80, 255), 2)
+                cv2.line(frame, (cx + 6, cy - 6), (cx - 6, cy + 6), (0, 80, 255), 2)
+
+        # EAR readout (small, bottom-left of face bbox)
+        ear_txt = f"EAR:{ear:.2f}"
+        cv2.putText(frame, ear_txt,
+                    (left_pts[:, 0].min(), left_pts[:, 1].max() + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+
+        if gaze_ratio_val is not None:
+            ratio_txt = f"GAZE:{gaze_ratio_val:.2f}"
+            cv2.putText(frame, ratio_txt,
+                        (right_pts[:, 0].max() - 70, right_pts[:, 1].max() + 16),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
