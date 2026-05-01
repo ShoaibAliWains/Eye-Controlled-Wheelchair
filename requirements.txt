@@ -1,8 +1,6 @@
 opencv-python
 numpy
 RPi.GPIO
-dlib
-scipy
 
 # ==============================================================
 # ⚠️ CRITICAL HARDWARE DEPENDENCIES FOR RASPBERRY PI ⚠️
@@ -14,5 +12,5 @@ scipy
 # to install the correct hardware camera libraries:
 #
 # sudo apt update
-# sudo apt install python3-libcamera python3-kmsxx python3-picamera2 cmake python3-dlib python3-scipy -y
+# sudo apt install python3-libcamera python3-kmsxx python3-picamera2 cmake -y
 # ==============================================================
