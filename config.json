@@ -1,10 +1,25 @@
 {
-    "ear_blink_threshold": 0.22,
-    "gaze_left_threshold": 0.58,
-    "gaze_right_threshold": 0.42,
-    "max_motor_speed": 75,
-    "hold_frames": 5,
-    "blink_tolerance": 0.6,
-    "double_blink_win": 1.0,
-    "paused_on_start": false
+    "_comment": "Eye-Controlled Wheelchair — field-tunable config (no code editing needed)",
+
+    "gaze_left_threshold":  0.38,
+    "gaze_right_threshold": 0.62,
+
+    "ratio_smooth_frames": 6,
+
+    "min_pupil_area": 40,
+    "max_pupil_area": 3000,
+    "min_circularity": 0.25,
+
+    "no_eye_frames": 8,
+
+    "haar_scale":      1.15,
+    "haar_neighbours": 4,
+
+    "thresh_block": 17,
+    "thresh_c":      4,
+
+    "hold_frames":      10,
+    "blink_tolerance":   0.6,
+    "double_blink_win":  1.0,
+    "paused_on_start":  false
 }
