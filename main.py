@@ -9,7 +9,6 @@ Reset: press  r
 import cv2
 import time
 import numpy as np
-import json
 
 from camera        import Camera
 from eye_tracking  import EyeTracker
@@ -23,15 +22,7 @@ from motor_control import MotorController
 DRIVER_TYPE  = "IN_IN_PWM"          # "IN_IN_PWM"  or  "DIR_PWM"
 LEFT_MOTOR   = {'in1': 5,  'in2': 6,  'pwm': 12, 'dir': None, 'en': None}
 RIGHT_MOTOR  = {'in1': 16, 'in2': 20, 'pwm': 13, 'dir': None, 'en': None}
-
-# Load Max Speed dynamically from config.json
-try:
-    with open('config.json', 'r') as f:
-        MAX_SPEED = json.load(f).get("max_motor_speed", 75)
-except Exception as e:
-    print(f"[WARN] Error loading speed from config.json: {e}")
-    MAX_SPEED = 75
-
+MAX_SPEED    = 75
 TARGET_FPS   = 30
 FRAME_BUDGET = 1.0 / TARGET_FPS
 # ═══════════════════════════════════════════════════════════════════════
@@ -70,7 +61,7 @@ def draw_ui(frame, logic, command, motors, gaze_dir, eye_open):
                 (12, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, state_color, 2)
 
     # Command
-    if "STOP" in command or "EMERGENCY" in command or "FROZEN" in command:
+    if "STOP" in command or "EMERGENCY" in command:
         cmd_color = _C_RED
     elif command in ("FORWARD", "LEFT", "RIGHT"):
         cmd_color = _C_GREEN
@@ -162,19 +153,8 @@ def main():
     command  = "STOP"
 
     try:
-        last_loop_time = time.time() # FAILSAFE TRACKER INITIALIZATION
-
         while True:
-            loop_start = time.time()
-
-            # FAILSAFE WATCHDOG CHECK (0.5 seconds timeout)
-            if loop_start - last_loop_time > 0.5:
-                print("\n[CRITICAL SAFETY WARNING] Loop delayed/frozen! Triggering Emergency Stop!")
-                motors.emergency_stop()
-                command = "SYSTEM FROZEN - MOTORS KILLED"
-                logic.current_command = command
-
-            last_loop_time = loop_start
+            t0 = time.time()
 
             # 1. Grab frame
             frame = cam.get_frame()
@@ -188,8 +168,8 @@ def main():
             command = logic.process(gaze_dir, eye_open)
 
             # 4. Motor control
-            if "EMERGENCY" in command or "STOP" in command or command == "PAUSED" or "FROZEN" in command:
-                if "EMERGENCY" in command or "FROZEN" in command:
+            if "EMERGENCY" in command or "STOP" in command or command == "PAUSED":
+                if "EMERGENCY" in command:
                     motors.emergency_stop()
                 else:
                     motors.set_target("STOP")
@@ -215,17 +195,9 @@ def main():
                 print("\n[Reset] Restarting logic …")
                 logic.reset()
                 motors.emergency_stop()
-                
-                # Reload speed settings live from JSON!
-                try:
-                    with open('config.json', 'r') as f:
-                        new_speed = json.load(f).get("max_motor_speed", 75)
-                        motors.max_speed = new_speed
-                except:
-                    pass
 
             # 7. FPS cap
-            elapsed = time.time() - loop_start
+            elapsed = time.time() - t0
             if elapsed < FRAME_BUDGET:
                 time.sleep(FRAME_BUDGET - elapsed)
 
