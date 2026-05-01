@@ -1,216 +1,282 @@
+"""
+eye_tracking.py  —  Single-Eye Pupil Tracker  (v3  •  glasses-optimised)
+=========================================================================
+
+Design goals
+------------
+* NO dlib, NO 68-point model  →  runs fast on Raspberry Pi Zero / Pi 4
+* Works from glasses-mounted camera (close-up, zoomed in, one eye fills frame)
+* Gaze direction is RELATIVE to the detected eye box, not to fixed screen %
+* Robust to head movement: eye box moves, ratio stays correct
+* Graceful fallback: lost eye → last-known ratio for N frames, then NO_EYE
+
+Detection pipeline
+------------------
+  Frame
+   │
+   ├─► Haar eye cascade  →  eye bounding box  (ROI)
+   │
+   ├─► Inside ROI: adaptive threshold  →  isolate dark iris/pupil blob
+   │
+   ├─► Largest circular contour  →  pupil centre  (cx_local, cy_local)
+   │
+   ├─► gaze_ratio  =  cx_local / eye_box_width          ← KEY FIX
+   │      < left_thr   →  "LEFT"
+   │      > right_thr  →  "RIGHT"
+   │      else         →  "FORWARD"
+   │
+   └─► No valid pupil for no_eye_lim frames  →  "NO_EYE"
+"""
+
 import cv2
-import dlib
 import numpy as np
-import os
 import json
-import urllib.request
-import bz2
-from scipy.spatial import distance as dist
+import os
 from collections import deque
 
-# ─────────────────────────────────────────────
-#  Eye Aspect Ratio  (blink / eye-open check)
-# ─────────────────────────────────────────────
-def eye_aspect_ratio(eye_points):
-    """
-    EAR = (||p2-p6|| + ||p3-p5||) / (2 * ||p1-p4||)
-    Classic Soukupová & Čech formula.
-    Returns 0.0 when the eye is fully closed.
-    """
-    A = dist.euclidean(eye_points[1], eye_points[5])
-    B = dist.euclidean(eye_points[2], eye_points[4])
-    C = dist.euclidean(eye_points[0], eye_points[3])
-    if C == 0:
-        return 0.0
-    return (A + B) / (2.0 * C)
 
-# ─────────────────────────────────────────────
-#  Gaze Ratio  (LEFT / CENTER / RIGHT)
-# ─────────────────────────────────────────────
-def gaze_ratio(eye_points, gray_frame):
-    """
-    Divides the eye ROI into left / right halves and
-    compares white-pixel count to determine gaze direction.
-    """
-    height, width = gray_frame.shape
-    mask = np.zeros((height, width), dtype=np.uint8)
-    pts = np.array(eye_points, dtype=np.int32)
-    cv2.fillPoly(mask, [pts], 255)
+# ──────────────────────────────────────────────
+#  Default config  (overridden by config.json)
+# ──────────────────────────────────────────────
+_DEFAULTS = {
+    # Gaze ratio thresholds  (0 = left edge of eye box, 1 = right edge)
+    "gaze_left_threshold":  0.38,
+    "gaze_right_threshold": 0.62,
 
-    eye_region = cv2.bitwise_and(gray_frame, gray_frame, mask=mask)
+    # Smoothing: how many frames to average the ratio over
+    "ratio_smooth_frames": 6,
 
-    x_coords = pts[:, 0]
-    y_coords = pts[:, 1]
-    ex, ey = x_coords.min(), y_coords.min()
-    ew = x_coords.max() - ex
-    eh = y_coords.max() - ey
+    # Pupil contour size filter
+    "min_pupil_area": 40,
+    "max_pupil_area": 3000,
 
-    if ew <= 0 or eh <= 0:
-        return 0.5  # safe default = FORWARD
+    # Minimum circularity  (1.0 = perfect circle, lower = allows oval)
+    "min_circularity": 0.25,
 
-    eye_crop = eye_region[ey:ey + eh, ex:ex + ew]
+    # Consecutive frames without pupil before declaring NO_EYE
+    "no_eye_frames": 8,
 
-    _, thresh = cv2.threshold(eye_crop, 70, 255, cv2.THRESH_BINARY_INV)
+    # Haar cascade tuning  (lower neighbours = more sensitive)
+    "haar_scale":      1.15,
+    "haar_neighbours": 4,
 
-    mid = ew // 2
-    left_white  = cv2.countNonZero(thresh[:, :mid])
-    right_white = cv2.countNonZero(thresh[:, mid:])
+    # Adaptive threshold params
+    "thresh_block": 17,
+    "thresh_c":      4,
+}
 
-    total = left_white + right_white
-    if total == 0:
-        return 0.5
 
-    ratio = left_white / total  
-    return ratio
-
-# ─────────────────────────────────────────────
-#  Main EyeTracker class
-# ─────────────────────────────────────────────
 class EyeTracker:
-    LEFT_EYE_IDX  = list(range(36, 42))
-    RIGHT_EYE_IDX = list(range(42, 48))
-    EAR_CONSEC_FRAMES = 2
+    """
+    Single-eye, glasses-mounted, close-up pupil tracker.
 
-    def __init__(self, predictor_path="shape_predictor_68_face_landmarks.dat", config_path="config.json"):
-        # 1. AUTO-DOWNLOAD MODEL FILE MAGIC
-        if not os.path.exists(predictor_path):
-            print(f"\n[INFO] '{predictor_path}' not found!")
-            print("[INFO] Downloading Dlib model automatically (this will take a minute)...")
-            url = "http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2"
-            bz2_path = predictor_path + ".bz2"
-            
-            urllib.request.urlretrieve(url, bz2_path)
-            
-            print("[INFO] Extracting model file...")
-            with bz2.BZ2File(bz2_path, 'rb') as fr, open(predictor_path, 'wb') as fw:
-                fw.write(fr.read())
-            
-            os.remove(bz2_path)
-            print("[INFO] Download and extraction complete!\n")
+    Public API  (identical to v2 so main.py needs NO changes):
+        gaze_dir, eye_open, display_frame = tracker.get_gaze(frame)
+    """
 
-        print("[EyeTracker] Loading dlib face detector …")
-        self.detector  = dlib.get_frontal_face_detector()
-        self.predictor = dlib.shape_predictor(predictor_path)
+    def __init__(self, predictor_path=None, config_path="config.json"):
+        # predictor_path kept for API compatibility — not used
+        cfg = _load_config(config_path)
 
-        # 2. CONFIG INTEGRATION
-        self.ear_threshold = 0.22
-        self.gaze_left = 0.65
-        self.gaze_right = 0.35
-        
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    cfg = json.load(f)
-                    self.ear_threshold = cfg.get("ear_blink_threshold", 0.22)
-                    self.gaze_left = cfg.get("gaze_left_threshold", 0.65)
-                    self.gaze_right = cfg.get("gaze_right_threshold", 0.35)
-            except Exception as e:
-                print(f"[EyeTracker] Config load error: {e}. Using defaults.")
+        self.left_thr   = cfg["gaze_left_threshold"]
+        self.right_thr  = cfg["gaze_right_threshold"]
+        self.smooth_n   = cfg["ratio_smooth_frames"]
+        self.min_area   = cfg["min_pupil_area"]
+        self.max_area   = cfg["max_pupil_area"]
+        self.min_circ   = cfg["min_circularity"]
+        self.no_eye_lim = cfg["no_eye_frames"]
+        self.haar_scale = cfg["haar_scale"]
+        self.haar_neigh = cfg["haar_neighbours"]
+        self.thr_block  = cfg["thresh_block"]
+        self.thr_c      = cfg["thresh_c"]
 
-        self._ratio_buf = deque(maxlen=5)
-        self._blink_counter = 0
-        self.eye_open = True          
-        self.hud_data = None
-        
-        # 3. PERFORMANCE OPTIMIZATION VARIABLES
-        self.frame_count = 0
-        self.cached_faces = [] 
+        # Haar cascade — ships with OpenCV, no extra download needed
+        cascade_path = cv2.data.haarcascades + "haarcascade_eye.xml"
+        self._cascade = cv2.CascadeClassifier(cascade_path)
+        if self._cascade.empty():
+            raise RuntimeError(
+                "[EyeTracker] haarcascade_eye.xml not found — reinstall opencv-python."
+            )
 
-        print("[EyeTracker] dlib loaded successfully.")
+        # Internal state
+        self._ratio_buf    = deque(maxlen=self.smooth_n)
+        self._last_eye_box = None          # stale box for short-miss frames
+        self._no_pupil_ctr = 0
 
-    def _shape_to_np(self, shape):
-        coords = np.zeros((68, 2), dtype=int)
-        for i in range(68):
-            coords[i] = (shape.part(i).x, shape.part(i).y)
-        return coords
+        print("[EyeTracker] Loaded — Single-Eye Relative Gaze Tracker (no dlib) ✓")
 
-    def _get_eye_pts(self, landmarks, indices):
-        return np.array([(landmarks[i][0], landmarks[i][1]) for i in indices])
+    # ── public ────────────────────────────────────────────────────────────
 
     def get_gaze(self, frame):
+        """
+        Parameters
+        ----------
+        frame : BGR numpy array from camera
+
+        Returns
+        -------
+        gaze_dir : "LEFT" | "FORWARD" | "RIGHT" | "NO_EYE"
+        eye_open : bool
+        display  : BGR frame with HUD drawn on it
+        """
         display = frame.copy()
         gray    = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray    = cv2.equalizeHist(gray)   
 
-        # PERFORMANCE OPTIMIZATION: Run Dlib detector every 3rd frame to save CPU
-        self.frame_count += 1
-        if self.frame_count % 3 == 0 or len(self.cached_faces) == 0:
-            self.cached_faces = self.detector(gray, 0)
+        # ── 1. Detect eye bounding box ────────────────────────────────
+        eye_box = self._detect_eye(gray) or self._last_eye_box
 
-        faces = self.cached_faces
+        if eye_box is None:
+            self._no_pupil_ctr += 1
+            return self._no_eye_result(display)
 
-        if len(faces) == 0:
-            self.eye_open  = False
-            self.hud_data  = None
-            return "NO_EYE", False, display
+        self._last_eye_box = eye_box
+        ex, ey, ew, eh = eye_box
 
-        face = max(faces, key=lambda r: r.width() * r.height())
-        shape     = self.predictor(gray, face)
-        landmarks = self._shape_to_np(shape)
+        # Draw eye box (cyan)
+        cv2.rectangle(display, (ex, ey), (ex + ew, ey + eh), (255, 200, 0), 1)
 
-        left_pts  = self._get_eye_pts(landmarks, self.LEFT_EYE_IDX)
-        right_pts = self._get_eye_pts(landmarks, self.RIGHT_EYE_IDX)
+        # ── 2. Find pupil inside the eye ROI ─────────────────────────
+        roi  = gray[ey:ey + eh, ex:ex + ew]
+        px, py, contour = self._find_pupil(roi)
 
-        ear_l = eye_aspect_ratio(left_pts)
-        ear_r = eye_aspect_ratio(right_pts)
-        ear   = (ear_l + ear_r) / 2.0
+        if px is None:
+            self._no_pupil_ctr += 1
+            if self._no_pupil_ctr >= self.no_eye_lim:
+                return self._no_eye_result(display)
+            # Short miss — keep last ratio, no command change
+            ratio    = float(np.mean(self._ratio_buf)) if self._ratio_buf else 0.5
+            gaze_dir = self._ratio_to_dir(ratio)
+            return gaze_dir, True, display
 
-        if ear < self.ear_threshold:
-            self._blink_counter += 1
-            if self._blink_counter >= self.EAR_CONSEC_FRAMES:
-                self.eye_open = False
-                self._draw_hud(display, left_pts, right_pts, landmarks,
-                               ear, gaze_ratio_val=None, is_closed=True)
-                return "NO_EYE", False, display
-        else:
-            self._blink_counter = 0
-            self.eye_open = True
+        self._no_pupil_ctr = 0
 
-        ratio_l = gaze_ratio(left_pts,  gray)
-        ratio_r = gaze_ratio(right_pts, gray)
-        raw_ratio = (ratio_l + ratio_r) / 2.0
+        # ── 3. Gaze ratio  ← THE KEY FIX ─────────────────────────────
+        # px is the pupil x-coordinate inside the eye box (local coords).
+        # Dividing by box width gives a value in [0, 1] that is INDEPENDENT
+        # of where on screen the eye box sits.  Head movement shifts the box
+        # but the ratio stays correct.
+        ratio = px / max(ew, 1)
+        self._ratio_buf.append(ratio)
+        smooth = float(np.mean(self._ratio_buf))
+        gaze_dir = self._ratio_to_dir(smooth)
 
-        self._ratio_buf.append(raw_ratio)
-        smooth_ratio = float(np.mean(self._ratio_buf))
-
-        # Dynamic Thresholds
-        if smooth_ratio < self.gaze_right:
-            gaze_dir = "RIGHT"
-        elif smooth_ratio > self.gaze_left:
-            gaze_dir = "LEFT"
-        else:
-            gaze_dir = "FORWARD"
-
-        self._draw_hud(display, left_pts, right_pts, landmarks,
-                       ear, smooth_ratio, is_closed=False)
+        # ── 4. Draw Iron-Man HUD ──────────────────────────────────────
+        abs_cx, abs_cy = ex + px, ey + py
+        self._draw_hud(display, ex, ey, ew, eh,
+                       abs_cx, abs_cy, contour, smooth, gaze_dir)
 
         return gaze_dir, True, display
 
-    def _draw_hud(self, frame, left_pts, right_pts, landmarks, ear, gaze_ratio_val, is_closed):
-        color = (0, 80, 255) if is_closed else (0, 255, 80) 
+    # ── internals ─────────────────────────────────────────────────────────
 
-        for pts in [left_pts, right_pts]:
-            hull = cv2.convexHull(pts)
-            cv2.polylines(frame, [hull], isClosed=True, color=color, thickness=1)
+    def _detect_eye(self, gray):
+        """Return largest detected eye box or None."""
+        eyes = self._cascade.detectMultiScale(
+            gray,
+            scaleFactor  = self.haar_scale,
+            minNeighbors = self.haar_neigh,
+            minSize      = (30, 20),
+            maxSize      = (300, 200),
+        )
+        if len(eyes) == 0:
+            return None
+        return tuple(sorted(eyes, key=lambda b: b[2] * b[3], reverse=True)[0])
 
-            cx = int(pts[:, 0].mean())
-            cy = int(pts[:, 1].mean())
+    def _find_pupil(self, roi_gray):
+        """
+        Find the darkest circular blob (pupil) in the eye ROI.
+        Returns (cx, cy, contour) in ROI-local coords, or (None, None, None).
+        """
+        thresh = cv2.adaptiveThreshold(
+            roi_gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            self.thr_block, self.thr_c,
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
 
-            if not is_closed:
-                cv2.line(frame, (cx - 8, cy),     (cx + 8, cy),     (0, 255, 80), 1)
-                cv2.line(frame, (cx,     cy - 8), (cx,     cy + 8), (0, 255, 80), 1)
-                cv2.circle(frame, (cx, cy), 3, (0, 255, 80), -1)
-            else:
-                cv2.line(frame, (cx - 6, cy - 6), (cx + 6, cy + 6), (0, 80, 255), 2)
-                cv2.line(frame, (cx + 6, cy - 6), (cx - 6, cy + 6), (0, 80, 255), 2)
+        contours, _ = cv2.findContours(
+            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
 
-        ear_txt = f"EAR:{ear:.2f}"
-        cv2.putText(frame, ear_txt,
-                    (left_pts[:, 0].min(), left_pts[:, 1].max() + 16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        best, best_score = None, -1
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if not (self.min_area < area < self.max_area):
+                continue
+            perim = cv2.arcLength(cnt, True)
+            if perim == 0:
+                continue
+            circ = 4 * np.pi * area / (perim ** 2)
+            if circ < self.min_circ:
+                continue
+            score = area * circ          # prefer large, round blobs
+            if score > best_score:
+                best_score, best = score, cnt
 
-        if gaze_ratio_val is not None:
-            ratio_txt = f"GAZE:{gaze_ratio_val:.2f}"
-            cv2.putText(frame, ratio_txt,
-                        (right_pts[:, 0].max() - 70, right_pts[:, 1].max() + 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+        if best is None:
+            return None, None, None
+
+        M = cv2.moments(best)
+        if M["m00"] == 0:
+            return None, None, None
+
+        return int(M["m10"] / M["m00"]), int(M["m01"] / M["m00"]), best
+
+    def _ratio_to_dir(self, ratio):
+        if ratio < self.left_thr:
+            return "LEFT"
+        if ratio > self.right_thr:
+            return "RIGHT"
+        return "FORWARD"
+
+    def _no_eye_result(self, display):
+        h, w = display.shape[:2]
+        cv2.putText(display, "NO EYE DETECTED",
+                    (w // 2 - 120, h // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 60, 255), 2)
+        return "NO_EYE", False, display
+
+    def _draw_hud(self, frame, ex, ey, ew, eh,
+                  abs_cx, abs_cy, contour, ratio, gaze_dir):
+
+        # Pupil contour outline
+        if contour is not None:
+            shifted = contour + np.array([[[ex, ey]]])
+            cv2.drawContours(frame, [shifted], -1, (0, 255, 80), 1)
+
+        # Pupil crosshair + dot
+        cv2.circle(frame, (abs_cx, abs_cy), 4, (0, 255, 80), -1)
+        cv2.line(frame, (abs_cx - 10, abs_cy), (abs_cx + 10, abs_cy), (0, 255, 80), 1)
+        cv2.line(frame, (abs_cx, abs_cy - 10), (abs_cx, abs_cy + 10), (0, 255, 80), 1)
+
+        # Zone boundaries drawn INSIDE the eye box (not on screen edges)
+        lx = int(ex + ew * self.left_thr)
+        rx = int(ex + ew * self.right_thr)
+        cv2.line(frame, (lx, ey), (lx, ey + eh), (255, 150, 0), 1)
+        cv2.line(frame, (rx, ey), (rx, ey + eh), (255, 150, 0), 1)
+
+        # Gaze ratio bar (just below eye box)
+        bx, by, bw, bh = ex, ey + eh + 6, ew, 6
+        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (50, 50, 50), -1)
+        fill   = int(bw * ratio)
+        bcolor = (0, 255, 80) if gaze_dir == "FORWARD" else (0, 120, 255)
+        cv2.rectangle(frame, (bx, by), (bx + fill, by + bh), bcolor, -1)
+        cv2.putText(frame, f"{ratio:.2f}",
+                    (bx + bw + 6, by + bh),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1)
+
+
+# ── module-level helper ───────────────────────────────────────────────────────
+
+def _load_config(path):
+    cfg = _DEFAULTS.copy()
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                cfg.update(json.load(f))
+            print(f"[EyeTracker] Config loaded: {path}")
+        except Exception as e:
+            print(f"[EyeTracker] Config error ({e}) — using defaults")
+    return cfg
