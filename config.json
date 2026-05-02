@@ -1,11 +1,23 @@
 {
-    "_comment": "Configuration for Direct Blob Tracking System",
-    
-    "left_thr": 0.40,
-    "right_thr": 0.60,
-    "hold_frames": 5,
-    "max_speed": 75,
-    
-    "camera_resolution": [640, 480],
-    "camera_framerate": 30
+    "_info": "Eye-Controlled Wheelchair — edit here, no code changes needed",
+
+    "_eye": "── Eye Tracking ──────────────────────────────",
+    "gaze_left_threshold":  0.42,
+    "gaze_right_threshold": 0.58,
+    "ratio_smooth_frames":  7,
+    "pupil_min_fraction":   0.04,
+    "pupil_max_fraction":   0.40,
+    "min_circularity":      0.35,
+    "darkness_percentile":  40,
+    "no_eye_frames":        10,
+    "haar_scale":           1.2,
+    "haar_neighbours":      4,
+    "eye_box_confirm":      3,
+
+    "_logic": "── Logic Controller ──────────────────────────",
+    "hold_frames":              12,
+    "blink_tolerance":           0.5,
+    "double_blink_win":          1.2,
+    "double_blink_cooldown":     2.0,
+    "paused_on_start":          false
 }
