@@ -1,44 +1,37 @@
 import cv2
 import time
-import numpy as np
 from camera import Camera
 from eye_tracking import EyeTracker
 from motor_control import MotorController
+from control_logic import LogicController
 
 def main():
     cam = Camera()
     tracker = EyeTracker()
     motors = MotorController()
+    logic = LogicController()
 
-    print("System Running: Direct Blob Tracking (Video Mode)")
+    print("System Running: Original Eye-Box AI Restored")
 
     try:
         while True:
             frame = cam.get_frame()
             if frame is None: continue
 
-            # Get tracking data
-            gaze_dir, thresh_view, display = tracker.get_gaze(frame)
+            # Get tracking data (Original format)
+            gaze_dir, eye_open, display = tracker.get_gaze(frame)
+            
+            # Smooth the command
+            command = logic.process(gaze_dir)
             
             # Send to motors
-            motors.set_target(gaze_dir)
+            motors.set_target(command)
 
-            # --- HUD like the Video ---
-            # Shrink threshold view to show in corner
-            th, tw = thresh_view.shape[:2]
-            thresh_small = cv2.resize(thresh_view, (tw//3, th//3))
-            sth, stw = thresh_small.shape[:2]
-            
-            # Overlay threshold view on top left
-            display[0:sth, 0:stw] = thresh_small
-            cv2.rectangle(display, (0, 0), (stw, sth), (0, 255, 0), 2)
-            cv2.putText(display, "AI SCAN", (5, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+            # Command text on HUD
+            cmd_color = (0, 255, 0) if command in ["FORWARD", "LEFT", "RIGHT"] else (0, 0, 255)
+            cv2.putText(display, f"CMD: {command}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, cmd_color, 3)
 
-            # Command text
-            cmd_color = (0, 255, 0) if gaze_dir in ["FORWARD", "LEFT", "RIGHT"] else (0, 0, 255)
-            cv2.putText(display, f"CMD: {gaze_dir}", (10, 450), cv2.FONT_HERSHEY_SIMPLEX, 1, cmd_color, 3)
-
-            cv2.imshow("Direct Tracking HUD", display)
+            cv2.imshow("Original Tracker HUD", display)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
