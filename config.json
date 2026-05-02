@@ -12,12 +12,12 @@
     "warmup_frames":    20,
 
     "_section_eye": "─── Eye Tracking ─────────────────────────",
-    "gaze_left_threshold":  0.38,
-    "gaze_right_threshold": 0.62,
+    "gaze_left_threshold":  0.45,
+    "gaze_right_threshold": 0.55,
     "ratio_smooth_frames":  8,
 
     "_section_pupil": "─── Pupil Filter (dynamic, scales with eye size) ───",
-    "pupil_min_fraction":   0.015,
+    "pupil_min_fraction":   0.05,
     "pupil_max_fraction":   0.35,
     "min_circularity":      0.40,
     "darkness_percentile":  35,
