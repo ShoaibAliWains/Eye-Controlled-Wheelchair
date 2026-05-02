@@ -41,14 +41,14 @@ from collections import deque
 # ──────────────────────────────────────────────────────────────
 _DEFAULTS = {
     # Gaze ratio fallback thresholds (used only if calibration is skipped)
-    "gaze_left_threshold":  0.38,
-    "gaze_right_threshold": 0.62,
+    "gaze_left_threshold":  0.45,
+    "gaze_right_threshold": 0.55,
 
     # Ratio smoothing window (frames)
     "ratio_smooth_frames": 8,
 
     # Pupil area as fraction of eye-box area  ← DYNAMIC, not pixel count
-    "pupil_min_fraction": 0.015,   # pupil ≥ 1.5% of eye box area
+    "pupil_min_fraction": 0.05,    # pupil ≥ 5% of eye box area (filters eyelashes)
     "pupil_max_fraction": 0.35,    # pupil ≤ 35% of eye box area
 
     # Circularity: 1.0 = perfect circle. Eyelashes ≈ 0.05–0.15
@@ -192,8 +192,8 @@ class EyeTracker:
         self._thr_block   = cfg["thresh_block"]
         self._thr_c       = cfg["thresh_c"]
 
-        # Haar cascade
-        cascade_path = cv2.data.haarcascades + "haarcascade_eye.xml"
+        # Haar cascade — use direct filename (cv2.data not available on Pi OS)
+        cascade_path = "haarcascade_eye.xml"
         self._cascade = cv2.CascadeClassifier(cascade_path)
         if self._cascade.empty():
             raise RuntimeError("[EyeTracker] haarcascade_eye.xml not found.")
@@ -204,9 +204,10 @@ class EyeTracker:
         self._no_pupil_ctr     = 0
         self._eye_box_history  = deque(maxlen=self._confirm_n)   # temporal validation
 
-        # Calibration
+        # Calibration — BYPASSED: use config thresholds directly
         self._calib = _Calibrator(cfg)
-        self.calibrating = True
+        self._calib.done = True      # FORCE SKIP calibration screen
+        self.calibrating = False     # FORCE FALSE so motor commands fire immediately
 
         print("[EyeTracker] v4 — Dynamic Pupil Filter + Auto-Calibration  ✓")
         print(f"[EyeTracker] Starting calibration: '{self._calib.current_instruction}'")
@@ -332,7 +333,7 @@ class EyeTracker:
             scaleFactor  = self._haar_scale,
             minNeighbors = self._haar_neigh,
             minSize      = (25, 15),
-            maxSize      = (320, 200),
+            maxSize      = (600, 400),
         )
 
         best = None
