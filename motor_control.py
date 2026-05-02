@@ -2,8 +2,7 @@ import RPi.GPIO as GPIO
 import time
 
 # ════════════════ CALIBRATION BLOCK ════════════════
-# Wiring issues are now handled in main.py pin mapping.
-# Keep these False to avoid double-correction.
+# Wiring issues are handled in main.py pin mapping.
 SWAP_LEFT_RIGHT    = False  
 INVERT_LEFT_MOTOR  = False  
 INVERT_RIGHT_MOTOR = False  
@@ -11,55 +10,44 @@ INVERT_RIGHT_MOTOR = False
 
 class MotorController:
     def __init__(self, config_l, config_r, driver_type="IN_IN_PWM", max_speed=60):
-        """
-        driver_type can be "IN_IN_PWM" or "DIR_PWM"
-        """
         GPIO.setmode(GPIO.BCM)
         GPIO.setwarnings(False)
 
         self.driver_type = driver_type
-        self.max_speed = max_speed # Hard safety limit (0-100)
+        self.max_speed = max_speed 
         self.config_l = config_l
         self.config_r = config_r
 
-        # Setup all pins provided in the configs
         for cfg in [self.config_l, self.config_r]:
             for key, pin in cfg.items():
                 if pin is not None:
                     GPIO.setup(pin, GPIO.OUT)
-                    if key == 'en': GPIO.output(pin, GPIO.HIGH) # Enable by default
+                    if key == 'en': GPIO.output(pin, GPIO.HIGH)
 
-        # Initialize PWM (1kHz)
         self.pwm_l = GPIO.PWM(self.config_l['pwm'], 1000)
         self.pwm_r = GPIO.PWM(self.config_r['pwm'], 1000)
         self.pwm_l.start(0)
         self.pwm_r.start(0)
 
-        # State Tracking
         self.current_speed_l = 0.0
         self.current_speed_r = 0.0
         self.target_speed_l = 0.0
         self.target_speed_r = 0.0
         
-        # Acceleration/Deceleration factor (Soft braking)
         self.accel_step = 1.5 
-        self.brake_step = 3.0 # Braking is faster than accelerating for safety
+        self.brake_step = 3.0 
 
         self.current_direction = "STOP"
         self.target_direction = "STOP"
 
     def _apply_logic(self, left_fwd, left_rev, right_fwd, right_rev):
-        # Apply Calibration Flags
         if SWAP_LEFT_RIGHT:
             left_fwd, left_rev, right_fwd, right_rev = right_fwd, right_rev, left_fwd, left_rev
-            
         if INVERT_LEFT_MOTOR:
             left_fwd, left_rev = left_rev, left_fwd
-            
         if INVERT_RIGHT_MOTOR:
             right_fwd, right_rev = right_rev, right_fwd
 
-        # Write to physical pins
         if self.driver_type == "IN_IN_PWM":
             GPIO.output(self.config_l['in1'], left_fwd)
             GPIO.output(self.config_l['in2'], left_rev)
@@ -81,32 +69,26 @@ class MotorController:
             self.target_speed_l = speed
             self.target_speed_r = speed
         elif direction == "LEFT":
-            self.target_speed_l = speed * 0.5 # Slow turn for safety
-            self.target_speed_r = speed
+            self.target_speed_l = 0     # Stop left wheel
+            self.target_speed_r = speed # Drive right wheel
         elif direction == "RIGHT":
-            self.target_speed_l = speed
-            self.target_speed_r = speed * 0.5 # Slow turn for safety
+            self.target_speed_l = speed # Drive left wheel
+            self.target_speed_r = 0     # Stop right wheel
         else: # STOP
             self.target_speed_l = 0
             self.target_speed_r = 0
 
     def update(self):
-        """Must be called in main loop for smooth ramping and safe direction changes."""
-        
-        # 1. STOP BEFORE REVERSE SAFETY
         if self.current_direction != self.target_direction and (self.current_speed_l > 0 or self.current_speed_r > 0):
             self.target_speed_l = 0
             self.target_speed_r = 0
         elif self.current_speed_l == 0 and self.current_speed_r == 0:
             self.current_direction = self.target_direction
-            if self.current_direction == "FORWARD":
+            
+            # Differential Steering: All movements use Forward pins physically, speeds dictate the turn
+            if self.current_direction in ["FORWARD", "LEFT", "RIGHT"]:
                 self._apply_logic(True, False, True, False)
-            elif self.current_direction == "LEFT":
-                self._apply_logic(False, True, True, False)
-            elif self.current_direction == "RIGHT":
-                self._apply_logic(True, False, False, True)
 
-        # 2. SOFT ACCELERATION & BRAKING
         for side in ['l', 'r']:
             current = getattr(self, f"current_speed_{side}")
             target = getattr(self, f"target_speed_{side}")
@@ -120,7 +102,6 @@ class MotorController:
         self.pwm_r.ChangeDutyCycle(self.current_speed_r)
 
     def emergency_stop(self):
-        """Instant halt for critical failures."""
         self.target_speed_l = 0
         self.target_speed_r = 0
         self.current_speed_l = 0
