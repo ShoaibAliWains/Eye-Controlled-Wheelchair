@@ -91,7 +91,7 @@ class EyeTracker:
         self.thr_c      = cfg["thresh_c"]
 
         # Haar cascade — ships with OpenCV, no extra download needed
-        cascade_path = cv2.data.haarcascades + "haarcascade_eye.xml"
+        cascade_path = "haarcascade_eye.xml"
         self._cascade = cv2.CascadeClassifier(cascade_path)
         if self._cascade.empty():
             raise RuntimeError(
