@@ -1,15 +1,18 @@
 import time
-import numpy as np
 from collections import deque
 
 class LogicController:
     def __init__(self, fps=30, hold_time=0.4, blink_tolerance=0.6):
-        self.state = "INIT"
-        self.center_x, self.center_y = 0, 0
-        self.calibration_samples = []
+        self.state = "READY" # No more calibrating phase, instantly ready
+        self.calibration_samples = [] # Kept for compatibility with main.py
         
-        self.x_threshold = 25
-        self.y_threshold = 20
+        # Hardcoded to the exact center of a 640x480 camera frame
+        self.center_x = 320
+        self.center_y = 240
+        
+        # Slightly widened the safe zone for better resting comfort
+        self.x_threshold = 30
+        self.y_threshold = 25
         
         self.history_length = int(fps * hold_time)
         self.command_history = deque(maxlen=self.history_length)
@@ -17,26 +20,10 @@ class LogicController:
         self.last_eye_time = time.time()
         self.blink_tolerance = blink_tolerance # Grace period before E-STOP
 
-    def process_calibration(self, pupil_pos):
-        self.state = "CALIBRATING - LOOK CENTER"
-        self.calibration_samples.append(pupil_pos)
-        
-        if len(self.calibration_samples) >= 45: # 1.5 seconds at 30fps
-            # Reject blinks/zeros during calibration
-            clean_samples = [p for p in self.calibration_samples if p is not None]
-            
-            if len(clean_samples) > 20:
-                x_vals = [p[0] for p in clean_samples]
-                y_vals = [p[1] for p in clean_samples]
-                # Median filters out wild outliers better than mean
-                self.center_x = int(np.median(x_vals))
-                self.center_y = int(np.median(y_vals))
-                self.state = "READY"
-            else:
-                self.calibration_samples.clear() # Restart if too noisy
-        return "STOP"
-
     def get_command(self, pupil_pos):
+        # Force state to READY even if main.py tries to reset it
+        self.state = "READY"
+
         # 1. BLINK TOLERANCE & E-STOP
         if pupil_pos is None:
             time_missing = time.time() - self.last_eye_time
@@ -49,11 +36,7 @@ class LogicController:
                 
         self.last_eye_time = time.time()
 
-        # 2. CALIBRATION ROUTINE
-        if self.state != "READY":
-            return self.process_calibration(pupil_pos)
-
-        # 3. DIRECTION MAPPING
+        # 2. DIRECTION MAPPING (Based on fixed center)
         px, py = pupil_pos
         raw_cmd = "STOP"
         if py < self.center_y - self.y_threshold:
@@ -65,7 +48,7 @@ class LogicController:
 
         self.command_history.append(raw_cmd)
 
-        # 4. DEBOUNCE
+        # 3. DEBOUNCE
         if len(self.command_history) == self.history_length and len(set(self.command_history)) == 1:
             return raw_cmd
             
