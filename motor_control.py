@@ -2,10 +2,11 @@ import RPi.GPIO as GPIO
 import time
 
 # ════════════════ CALIBRATION BLOCK ════════════════
-# Wiring issues fixed via software. Edit these if needed:
-SWAP_LEFT_RIGHT    = True   # Fixes the Forward/Right swap issue
-INVERT_LEFT_MOTOR  = False  # Set to True if left motor spins backward
-INVERT_RIGHT_MOTOR = False  # Set to True if right motor spins backward
+# Wiring issues are now handled in main.py pin mapping.
+# Keep these False to avoid double-correction.
+SWAP_LEFT_RIGHT    = False  
+INVERT_LEFT_MOTOR  = False  
+INVERT_RIGHT_MOTOR = False  
 # ═══════════════════════════════════════════════════
 
 class MotorController:
