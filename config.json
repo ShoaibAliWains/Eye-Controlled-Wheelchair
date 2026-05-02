@@ -1,44 +1,11 @@
 {
-    "_comment": "Eye-Controlled Wheelchair v4 — edit this file to tune, no code changes needed",
-
-    "_section_camera": "─── Camera ───────────────────────────────",
-    "resolution":       [640, 480],
-    "framerate":        30,
-    "flip_horizontal":  true,
-    "flip_vertical":    false,
-    "crop_roi":         null,
-    "alpha":            1.2,
-    "beta":             10,
-    "warmup_frames":    20,
-
-    "_section_eye": "─── Eye Tracking ─────────────────────────",
-    "gaze_left_threshold":  0.45,
-    "gaze_right_threshold": 0.55,
-    "ratio_smooth_frames":  8,
-
-    "_section_pupil": "─── Pupil Filter (dynamic, scales with eye size) ───",
-    "pupil_min_fraction":   0.05,
-    "pupil_max_fraction":   0.35,
-    "min_circularity":      0.40,
-    "darkness_percentile":  35,
-
-    "_section_haar": "─── Haar Cascade ──────────────────────────",
-    "haar_scale":           1.15,
-    "haar_neighbours":      4,
-    "eye_box_confirm_frames": 3,
-
-    "_section_thresh": "─── Adaptive Threshold ────────────────────",
-    "thresh_block":         11,
-    "thresh_c":              6,
-
-    "_section_calib": "─── Auto-Calibration ──────────────────────",
-    "calib_centre_sec":     3.0,
-    "calib_side_sec":       2.0,
-
-    "_section_logic": "─── Logic Controller ──────────────────────",
-    "hold_frames":              10,
-    "blink_tolerance":           0.5,
-    "double_blink_win":          1.2,
-    "double_blink_cooldown":     2.0,
-    "paused_on_start":          false
+    "_comment": "Configuration for Direct Blob Tracking System",
+    
+    "left_thr": 0.40,
+    "right_thr": 0.60,
+    "hold_frames": 5,
+    "max_speed": 75,
+    
+    "camera_resolution": [640, 480],
+    "camera_framerate": 30
 }
