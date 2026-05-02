@@ -1,29 +1,12 @@
-# ─────────────────────────────────────────────────────────────
-#  Eye-Controlled Wheelchair  v4  —  Python dependencies
-# ─────────────────────────────────────────────────────────────
-
-# Core computer-vision + numerics (pip install these)
+# OpenCV for Image Processing (Direct Blob Tracking)
 opencv-python
-numpy
-scipy          # only needed if you later add dlib EAR; harmless to include
 
-# GPIO (Raspberry Pi only)
+# Numpy for mathematical arrays and thresholding
+numpy
+
+# Raspberry Pi GPIO for Motor Control
 RPi.GPIO
 
-# ─────────────────────────────────────────────────────────────
-#  ⚠️  CAMERA DRIVERS — DO NOT install via pip  ⚠️
-#  Run these commands once in the Pi terminal instead:
-#
-#    sudo apt update
-#    sudo apt install -y python3-libcamera python3-kmsxx python3-picamera2
-#
-# ─────────────────────────────────────────────────────────────
-
-# ─────────────────────────────────────────────────────────────
-#  Raspberry Pi install command (use --break-system-packages
-#  on Pi OS Bookworm / newer):
-#
-#    pip install opencv-python numpy scipy RPi.GPIO \
-#        --break-system-packages
-#
-# ─────────────────────────────────────────────────────────────
+# NOTE: For Raspberry Pi Camera Module v3, 
+# 'picamera2' must be installed via apt-get, not pip:
+# sudo apt install python3-picamera2
