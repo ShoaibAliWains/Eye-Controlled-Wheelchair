@@ -1,25 +1,44 @@
 {
-    "_comment": "Eye-Controlled Wheelchair — field-tunable config (no code editing needed)",
+    "_comment": "Eye-Controlled Wheelchair v4 — edit this file to tune, no code changes needed",
 
+    "_section_camera": "─── Camera ───────────────────────────────",
+    "resolution":       [640, 480],
+    "framerate":        30,
+    "flip_horizontal":  true,
+    "flip_vertical":    false,
+    "crop_roi":         null,
+    "alpha":            1.2,
+    "beta":             10,
+    "warmup_frames":    20,
+
+    "_section_eye": "─── Eye Tracking ─────────────────────────",
     "gaze_left_threshold":  0.38,
     "gaze_right_threshold": 0.62,
+    "ratio_smooth_frames":  8,
 
-    "ratio_smooth_frames": 6,
+    "_section_pupil": "─── Pupil Filter (dynamic, scales with eye size) ───",
+    "pupil_min_fraction":   0.015,
+    "pupil_max_fraction":   0.35,
+    "min_circularity":      0.40,
+    "darkness_percentile":  35,
 
-    "min_pupil_area": 40,
-    "max_pupil_area": 3000,
-    "min_circularity": 0.25,
+    "_section_haar": "─── Haar Cascade ──────────────────────────",
+    "haar_scale":           1.15,
+    "haar_neighbours":      4,
+    "eye_box_confirm_frames": 3,
 
-    "no_eye_frames": 8,
+    "_section_thresh": "─── Adaptive Threshold ────────────────────",
+    "thresh_block":         11,
+    "thresh_c":              6,
 
-    "haar_scale":      1.15,
-    "haar_neighbours": 4,
+    "_section_calib": "─── Auto-Calibration ──────────────────────",
+    "calib_centre_sec":     3.0,
+    "calib_side_sec":       2.0,
 
-    "thresh_block": 17,
-    "thresh_c":      4,
-
-    "hold_frames":      10,
-    "blink_tolerance":   0.6,
-    "double_blink_win":  1.0,
-    "paused_on_start":  false
+    "_section_logic": "─── Logic Controller ──────────────────────",
+    "hold_frames":              10,
+    "blink_tolerance":           0.5,
+    "double_blink_win":          1.2,
+    "double_blink_cooldown":     2.0,
+    "paused_on_start":          false
 }
