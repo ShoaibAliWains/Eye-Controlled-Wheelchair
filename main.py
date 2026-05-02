@@ -9,9 +9,9 @@ from motor_control import MotorController
 # Set your driver type: "IN_IN_PWM" or "DIR_PWM"
 DRIVER_TYPE = "IN_IN_PWM" 
 
-# Pin Definitions (Set unused to None)
-LEFT_MOTOR = {'in1': 5, 'in2': 6, 'pwm': 12, 'dir': None, 'en': None}
-RIGHT_MOTOR = {'in1': 16, 'in2': 20, 'pwm': 13, 'dir': None, 'en': None}
+# Hardware correctly mapped based on client's test:
+LEFT_MOTOR = {'in1': 20, 'in2': 16, 'pwm': 13, 'dir': None, 'en': None}
+RIGHT_MOTOR = {'in1': 5, 'in2': 6, 'pwm': 12, 'dir': None, 'en': None}
 
 MAX_SPEED_LIMIT = 55 # 0-100 safe speed
 # =================================================
